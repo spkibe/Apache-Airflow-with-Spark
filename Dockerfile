@@ -1,15 +1,30 @@
-FROM apache/airflow:2.7.3-python3.11
+FROM apache/airflow:2.10.0
 
 USER root
 
+# Install dependencies for Java and clean up
 RUN apt-get update && \
-    apt-get install -y gcc python3-dev openjdk-11-jdk && \
-    apt-get clean
+    apt-get install -y --no-install-recommends openjdk-17-jdk procps && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ✅ Correct for most x86_64 machines
-ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+# Set environment variables for Java and Spark
+ENV JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+ENV SPARK_HOME="/opt/spark"
+ENV PATH="${PATH}:${JAVA_HOME}/bin:${SPARK_HOME}/bin:${SPARK_HOME}/sbin"
+
+# Download and extract Spark
+RUN mkdir -p ${SPARK_HOME} && \
+    curl -fsSL https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz -o spark.tgz && \
+    tar -xvzf spark.tgz --directory ${SPARK_HOME} --strip-components 1 && \
+    rm spark.tgz
+
+# Copy Spark configuration
+COPY spark-defaults.conf ${SPARK_HOME}/conf/
+
+# Set ownership
+RUN chown -R airflow ${SPARK_HOME}
 
 USER airflow
 
-# ✅ Only install spark provider, not Airflow again!
-RUN pip install apache-airflow-providers-apache-spark pyspark
+# Install Airflow Spark provider
+RUN pip install --no-cache-dir apache-airflow-providers-apache-spark

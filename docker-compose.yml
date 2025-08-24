@@ -1,13 +1,35 @@
 services:
+  # PostgreSQL
+  postgres:
+    image: postgres:14.0
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kibet-net
+
   # Spark Master
   spark-master:
     image: bitnami/spark:latest
     command: bin/spark-class org.apache.spark.deploy.master.Master
     ports:
-      - "8083:8080"  # Spark UI
-      - "7075:7077"
+      - "8083:8080"  # Spark Master UI
+      - "7075:7077"  # Spark Master service
+    environment:
+      SPARK_MODE: master
+      SPARK_CONF_DIR: /opt/spark/conf
+      SPARK_EVENTLOG_DIR: /opt/spark/events
     volumes:
       - ./jobs:/opt/bitnami/spark/jobs
+      - spark-events:/opt/spark/events
     networks:
       - kibet-net
 
@@ -22,27 +44,40 @@ services:
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 1g
       SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_CONF_DIR: /opt/spark/conf
+      SPARK_EVENTLOG_DIR: /opt/spark/events
     volumes:
       - ./jobs:/opt/bitnami/spark/jobs
+      - spark-events:/opt/spark/events
+    ports:
+      - "8082:8081"  # Spark Worker UI
     networks:
       - kibet-net
 
-  # PostgreSQL
-  postgres:
-    image: postgres:14.0
-    environment:
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
-      - POSTGRES_DB=airflow
+  # Airflow Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - airflow.env
+    command: bash -c "airflow db init && (airflow users list | grep -q 'admin' || airflow users create --username admin --firstname Admin --lastname Admin --role Admin --email admin@example.com --password admin) && airflow db migrate && airflow scheduler"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./jobs:/opt/airflow/jobs
+      - spark-events:/opt/spark/events
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2G
     networks:
       - kibet-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # Airflow Webserver
   webserver:
@@ -58,34 +93,30 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./jobs:/opt/airflow/jobs
+      - spark-events:/opt/spark/events
     depends_on:
       postgres:
         condition: service_healthy
       scheduler:
         condition: service_started
-    networks:
-      - kibet-net
-
-  # Airflow Scheduler
-  scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - airflow.env
-    command: bash -c "airflow db migrate && airflow scheduler"
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./jobs:/opt/airflow/jobs
-    depends_on:
-      postgres:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s  # Increased from 10s
+      retries: 10   # Increased from 5
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2G
     networks:
       - kibet-net
 
 volumes:
   postgres_data:
+  spark-events:
 
 networks:
   kibet-net:
+    driver: bridge
