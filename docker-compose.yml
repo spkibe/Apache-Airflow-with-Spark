@@ -1,0 +1,91 @@
+services:
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:latest
+    command: bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "8083:8080"  # Spark UI
+      - "7075:7077"
+    volumes:
+      - ./jobs:/opt/bitnami/spark/jobs
+    networks:
+      - kibet-net
+
+  # Spark Worker
+  spark-worker:
+    image: bitnami/spark:latest
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_MODE: worker
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 1g
+      SPARK_MASTER_URL: spark://spark-master:7077
+    volumes:
+      - ./jobs:/opt/bitnami/spark/jobs
+    networks:
+      - kibet-net
+
+  # PostgreSQL
+  postgres:
+    image: postgres:14.0
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kibet-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Airflow Webserver
+  webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - airflow.env
+    command: webserver
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./jobs:/opt/airflow/jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scheduler:
+        condition: service_started
+    networks:
+      - kibet-net
+
+  # Airflow Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - airflow.env
+    command: bash -c "airflow db migrate && airflow scheduler"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./jobs:/opt/airflow/jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kibet-net
+
+volumes:
+  postgres_data:
+
+networks:
+  kibet-net:
